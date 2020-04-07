@@ -1,0 +1,164 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import sklearn
+import cv2
+import os
+import random
+import pickle
+
+from skimage.feature import hog
+from skimage import data, exposure
+
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVR
+from sklearn.model_selection import GridSearchCV
+
+from scipy.stats import pearsonr
+
+dir_img = os.path.abspath(os.path.join('..', 'images4AVA\images4AVA\images.7z\images'))
+file_anot = os.path.abspath(os.path.join('..', 'rgbtohsv\\anotatii.txt'))
+imagini = os.listdir(dir_img)
+random.seed(100)
+imagini_selectate = list(map(lambda x: x.split('\\')[-1].split(".")[0], random.sample(imagini, 2000)))
+anotatii_salvate = os.path.abspath(os.path.join('..', 'rgbtohsv\\anotatii.pkl'))  # salvam pe disk anotatii(2000)
+anotatii = {}
+
+if (os.path.exists(anotatii_salvate)):
+    with open(anotatii_salvate, 'rb') as f:
+        anotatii = pickle.load(f)  # incarca pe RAM anotatiile deja salvate pe disk(salveaza ca pe un fisier)
+else:
+    with open(file_anot, 'r') as f:
+        linie = f.readline()
+        while (linie):
+            scor = 0
+            nr_voturi = 0
+            continut = linie.split()
+            for i in range(2, 12):
+                scor += (i - 1) * int(continut[i])
+                nr_voturi += int(continut[i])
+            id = continut[1]
+            if id in imagini_selectate:
+                anotatii[id] = scor / nr_voturi;
+            linie = f.readline()
+    with open(anotatii_salvate, 'wb') as f:
+        pickle.dump(anotatii, f)  # salveaza anotatiile procesate pe disk
+print(anotatii)
+
+min_x, min_y = np.inf, np.inf
+for id in imagini_selectate:
+    path_img = os.path.abspath(os.path.join('..', 'images4AVA\images4AVA\images.7z\images')) + '\\' + id + '.jpg'
+    img = cv2.imread(path_img)
+    if (img.shape[0] < min_x):
+        min_x = img.shape[0]
+    if (img.shape[1] < min_y):
+        min_y = img.shape[1]
+
+features_salvate = os.path.abspath(os.path.join('..', 'rgbtohsv\\features.pkl'))
+X = []  # X o sa aiba 2000 de elemente,fiecare feature_vector de lungime 729,adica am 2000 de vectori obtinuti din 2000 de img=>729 de feature-uri
+
+winSize = (64, 64)
+blockSize = (16, 16)
+blockStride = (8, 8)
+cellSize = (8, 8)
+nbins = 6
+derivAperture = 1
+winSigma = 4.
+histogramNormType = 0
+L2HysThreshold = 2.0000000000000001e-01
+gammaCorrection = 0
+nlevels = 64
+winStride = (8, 8)
+padding = (8, 8)
+locations = ((10, 20),)
+
+if (os.path.exists(features_salvate)):
+    with open(features_salvate, 'rb') as f:
+        X = pickle.load(f)  # incarca pe RAM feature-urile deja salvate pe disk(salveaza ca pe un fisier)
+else:
+    for id in imagini_selectate:
+        path_img = os.path.abspath(os.path.join('..', 'images4AVA\images4AVA\images.7z\images')) + '\\' + id + '.jpg'
+        img = cv2.imread(path_img)  # aduce img pe RAM ca o var de pe disk
+        img = cv2.resize(img, (min_x, min_y))
+        img_HSV = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([img_HSV], [0, 1, 2], None, [6, 6, 6], [0, 255, 0, 255, 0, 255])
+        hog = cv2.HOGDescriptor(winSize, blockSize, blockStride, cellSize, nbins, derivAperture, winSigma,
+                                histogramNormType, L2HysThreshold, gammaCorrection, nlevels)
+        hist2 = hog.compute(img, winStride, padding, locations)
+        cv2.normalize(hist2, hist2)
+        hist2 = np.reshape(hist2, int(hist2.shape[0]) * int(hist2.shape[1]))
+        # normalize the histogram
+
+        cv2.normalize(hist, hist)
+        hist = np.reshape(hist, int(hist.shape[0]) * int(hist.shape[1]) * int(hist.shape[
+                                                                                  2]))  # procesam imaginile => le transformam in vectori:fiecare cu lungine de shape[0]*shape[1]*shape[2]
+        # print(hist.shape)
+        X.append(np.concatenate((hist, hist2)))  # adaug la lista goala featurile img curente(o sa fie 2000)
+    print(hist2.shape)
+    with open(features_salvate, 'wb') as f:
+        pickle.dump(X, f)  # salveaza feature-urile procesate pe disk
+
+y = []
+for id in imagini_selectate:
+    y.append(anotatii[id])  # punem in y cheia din anotatii(media notelor) =>target
+
+X = np.array(X)  # X era o lista care continea numpy => acum totul e un numpy arrays
+y = np.array(y)
+import pprint
+
+for x in X:
+    print(np.count_nonzero(x))
+
+X_tuning, X_eval, y_tuning, y_eval = train_test_split(X, y, test_size=0.2,
+                                                      random_state=100)  # split la date in train si test
+
+# print(X_train.shape, X_val.shape, y_train.shape, y_val.shape)
+
+# Set the parameters by cross-validation
+tuned_parameters = {'kernel': ['linear', 'poly', 'rbf', 'sigmoid'], 'degree': [7], 'gamma': ["scale", "auto"],
+                    'tol': [1e-3, 1e-2, 1e-1, 1],
+                    'C': [0.01, 0.1, 1, 10, 100], 'epsilon': [1e-3, 1e-2, 1e-1, 1, 10]}
+
+predictii_salvate = os.path.abspath(os.path.join('..', 'rgbtohsv\\predictii.pkl'))  # salvam pe disk precictiile(2000)
+
+scores = ['neg_mean_squared_error']
+
+if (os.path.exists(predictii_salvate)):
+    with open(predictii_salvate, 'rb') as f:
+        predictii = pickle.load(f)  # incarca pe RAM predictiile deja salvate pe disk(salveaza ca pe un fisier)
+else:
+    for score in scores:
+        print("# Tuning hyper-parameters for %s" % score)
+        print()
+        # pt fircare alegere de param,sparge dataset-ul in 5 buc si face train la model pe 4 buc si testeaza pe a 5 si repeta asta cu fiecare bucata train-test(80-20)
+        clf = GridSearchCV(SVR(), tuned_parameters, cv=5, scoring=score, refit=True, verbose=10)
+        clf.fit(X_tuning, y_tuning)
+        print("Best parameters set found on development set:")
+        print()
+        print(clf.get_params())
+        print()
+        print("Grid scores on development set:")
+        print()
+        # Apply the classifier trained using tuning data(X_tuning+y_tuning) to eval data(X_eval+y_eval), and view the accuracy score::
+        print(clf.score(X_eval,
+                        y_eval))  # ia cel mai bun model,ii face train pe X_tunning si y_tunning,aplica modelul pe X_eval ca sa scoata predictii(y_pred_eval)
+        # si compara y_pred_eval cu y_eval(anotatiile true)
+        ##proces: X,y(datele initiale la un loc):l-am spart in 80-20,am pus 20-evaluation_data-deoparte(si din X si din y),cu restul de 80-tunning_data- am facut urm:
+        ##pt fiecare config de param am spart din nou in 5 bucati tuning_date-ul si pe rand,fiecare bucata in parte a fost test,iar restul de 4 trainuita,
+        ##dupa linia 129,avem best param,apoi ia un model de svr(cu cei mai buni param gasiti) ii face train pe tuning_data(X_tuning,y_tuning) returneaza
+        # predictii pe X_eval si le compara(calculeza MSE) cu anatotatiile adevarate(y_eval)
+        y_pred_eval = clf.predict(X_eval)
+        corr_coef = pearsonr(y_eval, y_pred_eval)
+        print('Pearsons correlation:', corr_coef)
+
+        print()
+        print(list(zip(y_eval, y_pred_eval)))
+        print()
+        print("The model is trained on the full development set.")
+        print("The scores are computed on the full evaluation set.")
+        print()
+    with open(predictii_salvate, 'wb') as f:
+        pickle.dump(list(zip(y_eval, y_pred_eval)), f)  # salveaza anotatiile procesate pe disk
+print(predictii)
+
+img = cv2.imread('eu.jpg')
